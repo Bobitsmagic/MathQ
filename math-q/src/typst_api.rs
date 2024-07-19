@@ -1,12 +1,17 @@
 use std::{fs::File, io::Write, process::Command};
 
-fn create_type_document(equation: &str) -> String {
-    format!("#set page(width: auto, height: auto, margin: 0cm);\n$ {} $", equation)
+fn create_type_document(equation: Vec<&str>) -> String {
+    format!("#set page(width: auto, height: auto, margin: 0cm);\n{}", equation.iter().map(|eq| format!("$ {} $", eq)).collect::<Vec<_>>().join("\n"))
 }
 
 pub fn show_equation(equation: &str) {
-    let document = create_type_document(equation);
+    let document = create_type_document(vec![equation]);
 
+    create_image(&document);
+}
+
+pub fn show_equations(equations: Vec<&str>) {
+    let document = create_type_document(equations);
     create_image(&document);
 }
 

@@ -1,0 +1,1 @@
+pub const PARTIAL_DERIVATIVE: &str = "sym.partial";
