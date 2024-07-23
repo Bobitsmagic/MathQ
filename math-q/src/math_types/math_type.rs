@@ -1,4 +1,5 @@
-use std::{char::ParseCharError, cmp::Ordering, iter::Sum};
+use core::panic;
+use std::{char::ParseCharError, cmp::Ordering, fmt::Error, iter::Sum};
 
 use crate::math_types::{math_type, typst_symbols};
 
@@ -23,28 +24,32 @@ impl PartialOrd for MathType {
             return Some(self.parameter.len().cmp(&other.parameter.len()));
         }
 
-        //Check if the parameters are sorted
-        for i in 1..self.parameter.len() {
-            let cmp = self.parameter[i].partial_cmp(&self.parameter[i - 1]);    
+        
+        if self.type_name.is_commutative() {
+            //Check if the parameters are sorted
 
-            if let Some(res) = cmp {
-                if res == Ordering::Less {
+            for i in 1..self.parameter.len() {
+                let cmp = self.parameter[i].partial_cmp(&self.parameter[i - 1]);    
+
+                if let Some(res) = cmp {
+                    if res == Ordering::Less {
+                        return None;
+                    }
+                }
+                else {
                     return None;
                 }
-            }
-            else {
-                return None;
-            }
 
-            let cmp = other.parameter[i].partial_cmp(&other.parameter[i - 1]);    
+                let cmp = other.parameter[i].partial_cmp(&other.parameter[i - 1]);    
 
-            if let Some(res) = cmp {
-                if res == Ordering::Less {
+                if let Some(res) = cmp {
+                    if res == Ordering::Less {
+                        return None;
+                    }
+                }
+                else {
                     return None;
                 }
-            }
-            else {
-                return None;
             }
         }
 
@@ -133,12 +138,258 @@ impl MathType {
         }
     }
 
+    pub fn is_sorted(&self) -> bool {
+        for i in 0..self.parameter.len() {
+            if !self.parameter[i].is_sorted() {
+                return false;
+            }
+        }
+
+        if self.type_name.is_commutative() {
+            for i in 1..self.parameter.len() {
+                if self.parameter[i - 1] > self.parameter[i] {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     pub fn is_variable(&self) -> bool {
-        // println!("Is function: {}", matches!(self.type_name, MathTypeName::Function(_)));
-
-        // println!("Parameter count: {}", self.parameter.len());
-
         return matches!(self.type_name, MathTypeName::Function(_)) && self.parameter.len() == 0;
+    }
+
+    pub fn contains(&self, tree: &MathType) -> bool {
+        if *self == *tree {
+            return true;
+        }
+
+        for i in 0..self.parameter.len() {
+            if self.parameter[i].contains(tree) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    pub fn count_nodes(&self) -> u64 {
+        let mut count = 1;
+        for i in 0..self.parameter.len() {
+            count += self.parameter[i].count_nodes();
+        }
+
+        return count;
+    }
+
+    pub fn replace(&self, tree: &MathType, replacement: &MathType) -> MathType {
+        if *self == *tree {
+            return replacement.clone();
+        }
+
+        return MathType::new(self.type_name.clone(), self.parameter.iter().map(|x| x.replace(tree, replacement)).collect());
+    }
+
+    pub fn simplify(&self) -> MathType {
+        let mut i = 0;
+        let mut prev = self.clone();
+        loop {
+            let mut next = prev.expand().flatten().reduce_neutral().combine();
+            next.sort();
+            
+            if next == prev {
+                return next;
+            }
+    
+            
+            i += 1;
+            
+            if i > 90 {
+                println!("Failed to simplify: \n{}", prev.get_string());
+                println!("{}", next.get_string());
+
+                println!("EQ: {}", next == prev);
+                return prev;
+            }
+            
+            prev = next.clone();
+            // println!("Finished reduction {} -> {} nodes", i, next.count_nodes());
+        } 
+    }
+
+    pub fn factor_out(&self) -> MathType {
+        println!("Factoring out: {:?} {}", self.type_name, self.parameter.len());
+
+        if self.type_name != MathTypeName::Sum {
+            return MathType::new(self.type_name.clone(), self.parameter.iter().map(|x| x.factor_out()).collect());
+        }
+
+        let mut best_sum_selection: u64 = 0;
+        let mut best_factor_selection: u64 = 0;
+        let mut best_count = 0;
+        
+        for summand_selection in 0..(1_u64 << self.parameter.len()) {
+            if summand_selection.count_ones() <= 1 {
+                continue;
+            }
+            
+            let max_product_length = iterate_set_bits(summand_selection).map(|i| {
+                let para = &self.parameter[i as usize];
+                if para.type_name == MathTypeName::Product {
+                    para.parameter.len()
+                } else {
+                    1
+                }
+            }).min().unwrap();
+
+
+
+            if max_product_length as u32 * summand_selection.count_ones() < best_count {
+                continue;
+            }
+            
+            let first_summand = self.parameter[iterate_set_bits(summand_selection).next().unwrap() as usize].clone();
+            let first_summand_length = if first_summand.type_name == MathTypeName::Product {
+                first_summand.parameter.len()
+            } else {
+                1
+            };
+
+            for factor_selection in 0..(1_u64 << first_summand_length) {
+                if factor_selection.count_ones() == 0 || factor_selection.count_ones() > max_product_length as u32 {
+                    continue;
+                }
+
+                if best_count > summand_selection.count_ones() * factor_selection.count_ones() {
+                    continue;
+                }
+
+                // println!("Checking sum selection: {:b}, factor selection: {:b}", summand_selection, factor_selection);
+
+                if check_selection(summand_selection, factor_selection, &self.parameter) {
+                    best_sum_selection = summand_selection;
+                    best_factor_selection = factor_selection;
+
+                    best_count = summand_selection.count_ones() * factor_selection.count_ones();
+                }
+
+            }            
+        }
+
+        if best_count == 0 {
+            return self.clone();
+        }
+        // println!("Best sum selection: {:b}, best factor selection: {:b}", best_sum_selection, best_factor_selection);
+
+        let first_summand = self.parameter[iterate_set_bits(best_sum_selection).next().unwrap() as usize].clone();
+            
+        let mut factors = iterate_set_bits(best_factor_selection).map(|i| {
+            if first_summand.type_name == MathTypeName::Product {
+                return first_summand.parameter[i as usize].clone();
+            } 
+
+            if i != 0 {
+                panic!("Invalid factor selection");
+            }
+
+            return first_summand.clone();
+    
+        }).collect::<Vec<MathType>>();
+
+        let mut reduced_summands = vec![];
+        let mut other_summands = vec![];
+
+        for summand in iterate_set_bits(best_sum_selection) {
+            let current_summand = self.parameter[summand as usize].clone();
+            if current_summand.type_name != MathTypeName::Product {
+                continue;
+            }
+
+            let mut new_product = current_summand.parameter.clone();
+            for f in &factors {
+                for i in 0..new_product.len() {
+                    if new_product[i] == *f {
+                        new_product.remove(i);
+                        break;
+                    }               
+                }
+            }
+
+            if new_product.len() == 0 {
+                continue;
+            }
+
+            reduced_summands.push(product(new_product));
+        }
+
+        for other_summand in iterate_set_bits(best_sum_selection ^ ((1_u64 << self.parameter.len()) - 1)) {
+            other_summands.push(self.parameter[other_summand as usize].clone());
+        }
+
+        factors.push(sum(reduced_summands));
+
+        other_summands.push(product(factors));
+
+        return sum(other_summands);
+
+        fn check_selection(summand_selection: u64, factor_selection: u64, summands: &Vec<MathType>) -> bool {
+
+            let first_summand = summands[iterate_set_bits(summand_selection).next().unwrap() as usize].clone();
+            
+            let factors = iterate_set_bits(factor_selection).map(|i| {
+                if first_summand.type_name == MathTypeName::Product {
+                    return first_summand.parameter[i as usize].clone();
+                } 
+
+                if i != 0 {
+                    panic!("Invalid factor selection");
+                }
+
+                return first_summand.clone();
+        
+            }).collect::<Vec<MathType>>();
+
+
+            for summand in iterate_set_bits(summand_selection) {
+                let current_summand = summands[summand as usize].clone();
+                if current_summand.type_name != MathTypeName::Product {
+                    return factors[0] == current_summand;
+                }
+
+                let mut index = 0;
+
+                for factor in &factors {
+                    while index < current_summand.parameter.len() {
+                        if current_summand.parameter[index] == *factor {
+                            break;
+                        }
+                        index += 1;
+                    }
+
+                    if index > current_summand.parameter.len() {
+                        return false;
+                    }
+
+                    index += 1;
+                }
+            }
+
+            return true;
+        }
+
+        fn get_all_selections(list: &mut Vec<usize>, min_index: usize, n: usize, k: usize, result: &mut Vec<Vec<usize>>) {
+            if list.len() == k {
+                result.push(list.clone());
+                return;
+            }
+
+            for i in min_index..n {
+                list.push(i);
+                get_all_selections(list, i + 1, n, k, result);
+                list.pop();
+            }
+        }
     }
 
     pub fn flatten(&self) -> MathType {
@@ -258,44 +509,44 @@ impl MathType {
                 return MathType::new(self.type_name.clone(), new_para);
             },
 
-            MathTypeName::Product => {
-                let mut para = self.parameter.iter().map(|x| x.combine()).collect::<Vec<MathType>>();
+            // MathTypeName::Product => {
+            //     let mut para = self.parameter.iter().map(|x| x.combine()).collect::<Vec<MathType>>();
 
-                for i in 0..para.len() {
-                    para[i].sort();
-                }
+            //     for i in 0..para.len() {
+            //         para[i].sort();
+            //     }
 
-                let mut new_para = vec![];
-                let mut collected = vec![false; para.len()];
-                for i in 0..para.len() {
-                    let mut count = 1;
+            //     let mut new_para = vec![];
+            //     let mut collected = vec![false; para.len()];
+            //     for i in 0..para.len() {
+            //         let mut count = 1;
 
-                    if collected[i] {
-                        continue;
-                    }
+            //         if collected[i] {
+            //             continue;
+            //         }
 
-                    for j in i + 1..para.len() {
-                        if para[i] == para[j]{
-                            count += 1;
-                            collected[j] = true;
-                        }
-                        else {
-                            if para[i] == reciprocal(para[j].clone()) {
-                                count -= 1;
-                                collected[j] = true;
-                            }
-                        }
-                    }
+            //         for j in i + 1..para.len() {
+            //             if para[i] == para[j]{
+            //                 count += 1;
+            //                 collected[j] = true;
+            //             }
+            //             else {
+            //                 if para[i] == reciprocal(para[j].clone()) {
+            //                     count -= 1;
+            //                     collected[j] = true;
+            //                 }
+            //             }
+            //         }
 
-                    if count == 1 {
-                        new_para.push(para[i].clone());
-                    } else {
-                        new_para.push(product(vec![natural_number(count), para[i].clone()]));
-                    }
-                }
+            //         if count == 1 {
+            //             new_para.push(para[i].clone());
+            //         } else {
+            //             new_para.push(power( para[i].clone(), natural_number(count)));
+            //         }
+            //     }
 
-                return MathType::new(self.type_name.clone(), new_para);
-            }
+            //     return MathType::new(self.type_name.clone(), new_para);
+            // }
 
             _ => MathType::new(self.type_name.clone(), self.parameter.iter().map(|x| x.combine()).collect()),
         }
@@ -374,7 +625,7 @@ impl MathType {
                 }
 
                 if prod.len() == 0 {
-                    return MathType::new(MathTypeName::NaturalNumber(1), vec![]);
+                    return natural_number(1);
                 }
 
                 if prod.len() == 1 {
@@ -404,7 +655,7 @@ impl MathType {
         assert!(delta_var.is_variable(), "Derivative can only be calculated for variables");
 
         return match self.type_name {
-            MathTypeName::Function(_) => if self.type_name == delta_var.type_name {
+            MathTypeName::Function(ref name) => if self.type_name == delta_var.type_name {
                 MathType::new(MathTypeName::NaturalNumber(1), vec![])
             } else {
                 sum((0..self.parameter.len()).map(|i| {
@@ -413,8 +664,7 @@ impl MathType {
     
                     return product(vec![
                         self.parameter[i].get_derivative(delta_var),
-                        variable(&format!("d/d{}", delta_var.get_typst_string())).clone(),
-                        MathType::new(self.type_name.clone(), parameter)
+                        function(&format!("{}'", name), self.parameter.clone())
                     ]);
                 }).collect())
             },
@@ -514,7 +764,7 @@ impl MathType {
             MathTypeName::NaturalNumber(value) => value.to_string(),
             MathTypeName::Sum => {
                 if self.parameter.len() == 0 {
-                    return "zero".to_string();
+                    return "\"zero\"".to_string();
                 }
 
                 if self.parameter.len() == 1 {
@@ -534,7 +784,7 @@ impl MathType {
             
             MathTypeName::Product => {
                 if self.parameter.len() == 0 {
-                    return "one".to_string();
+                    return "\"one\"".to_string();
                 }
 
                 let mut string = "".to_string();
@@ -579,8 +829,25 @@ impl MathType {
             }
 
             MathTypeName::Power => {
-                return format!("{}^({})", self.parameter[0].get_typst_string(), self.parameter[1].get_typst_string());
+                return format!("({})^({})", self.parameter[0].get_typst_string(), self.parameter[1].get_typst_string());
             }   
         }
     }
+}
+
+
+fn iterate_set_bits(mut value: u64) -> impl Iterator<Item=u32> {
+    //return (0..64).filter(move |x| value >> x & 1 != 0);
+
+    return std::iter::from_fn(move || {
+        if value != 0 {
+            let index = value.trailing_zeros();
+            value ^= 1_u64 << index;
+            
+            Some(index)
+        }
+        else {
+            None
+        }
+    });
 }

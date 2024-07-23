@@ -1,17 +1,28 @@
-use std::{fs::File, io::Write, process::Command};
+use std::{fs::File, io::Write, process::Command, thread};
 
-fn create_type_document(equation: Vec<&str>) -> String {
+fn create_type_document(equation: Vec<String>) -> String {
     format!("#set page(width: auto, height: auto, margin: 0cm);\n{}", equation.iter().map(|eq| format!("$ {} $", eq)).collect::<Vec<_>>().join("\n"))
 }
 
-pub fn show_equation(equation: &str) {
+pub fn show_equation(equation: String) {
     let document = create_type_document(vec![equation]);
 
     create_image(&document);
 }
 
-pub fn show_equations(equations: Vec<&str>) {
+pub fn show_equations(equations: Vec<String>) {
     let document = create_type_document(equations);
+    create_image(&document);
+}
+
+pub fn render_graph(equation: &str, graph: &str) {
+    let start_string = "#import \"@preview/diagraph:0.2.5\": *\n#set page(width: auto, height: auto, margin: 0cm);\n";
+
+    let middle_string = "#raw-render(```\ndigraph {\ngraph[splines=line] \nnode[shape=circle]  
+edge [arrowhead=none] rankdir=LR \n";
+    let end_string = "}```)\n";
+    
+    let document = format!("{} $ {} $ {} {} {}", start_string, equation, middle_string, graph, end_string);
     create_image(&document);
 }
 
@@ -26,4 +37,6 @@ fn create_image(document: &str) {
         .expect("failed to execute process");
 
     open::that("test.png").expect("failed to open image");
+
+    thread::sleep(std::time::Duration::from_secs(1));
 }
